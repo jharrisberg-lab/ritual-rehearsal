@@ -1,5 +1,5 @@
 // Ritual Rehearsal offline cache: the app files only.
-const CACHE = 'ritual-v1';
+const CACHE = 'ritual-v2';
 const SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
