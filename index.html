@@ -112,7 +112,7 @@ code{background:var(--bg);padding:1px 5px;border-radius:5px;font-size:.9em}
 <div class="wrap" id="app"></div>
 <div class="toast" id="toast" hidden></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
-<input type="file" id="scanFile" accept="image/*" capture="environment" hidden>
+<input type="file" id="scanFile" accept="image/*" multiple hidden>
 
 <script>
 'use strict';
@@ -302,7 +302,7 @@ function Edit(){
   raw.addEventListener('input',()=>{clearTimeout(drawParts._t);drawParts._t=setTimeout(drawParts,400);});
   drawParts();
   $('#scan').onclick=()=>$('#scanFile').click();
-  $('#scanFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)scanImage(f,raw,drawParts);};
+  $('#scanFile').onchange=e=>{const fs=[...e.target.files];e.target.value='';if(fs.length)scanImages(fs,raw,drawParts);};
   $('#saveBtn').onclick=()=>{
     const lines=parseScript(raw.value);
     if(!lines.length){toast('Add some words first');return;}
@@ -336,8 +336,8 @@ async function splitColours(file){
   const mk=()=>{const k=document.createElement('canvas');k.width=W;k.height=H;const kx=k.getContext('2d');return [k,kx,kx.createImageData(W,H)];};
   const [bc,bx,bi]=mk(),[rc,rx,ri]=mk();
   for(let y=0;y<H;y++)for(let x2=0;x2<W;x2++){const i=(y*W+x2)*4;const r=d[i],g=d[i+1],b=d[i+2];const L=.3*r+.59*g+.11*b;const B=bg[Math.floor(y/G)*gw+Math.floor(x2/G)];
-    const dark=L<B*0.42;
-    const red=!dark&&L<B*0.75&&g<0.45*r&&b<0.4*r;
+    const red=r>100&&L<B*0.8&&g<0.42*r&&b<0.45*r;
+    const dark=!red&&L<B*0.42;
     const bv=dark?0:255,rv=red?0:255;
     bi.data[i]=bi.data[i+1]=bi.data[i+2]=bv;bi.data[i+3]=255;ri.data[i]=ri.data[i+1]=ri.data[i+2]=rv;ri.data[i+3]=255;}
   bx.putImageData(bi,0,0);rx.putImageData(ri,0,0);
@@ -361,22 +361,57 @@ function rebuild(blackWords,redWords){
     ws.forEach(w=>{if(w.red&&!inRed){s+=(s?' ':'')+'[';inRed=true;}else if(!w.red&&inRed){s+='] ';inRed=false;}else if(s&&!s.endsWith('['))s+=' ';s+=w.text;});
     if(inRed)s+=']';
     const indented=Math.min(...ws.map(w=>w.bbox.x0))>left+lh*0.8;
-    out.push({s:s.replace(/\[\s+/g,'[').replace(/\s+\]/g,']'),indented});
+    out.push({s:s.replace(/\[\s+/g,'[').replace(/\s+\]/g,']'),indented,yc:r.yc});
   });
+  let page=null;
+  for(let i=out.length-1;i>=0;i--){const t=out[i].s.trim();
+    if(/^\d{1,4}$/.test(t)){if(page==null)page=+t;out.splice(i,1);continue;}
+    if(/^(First|Second|Third|1st|2nd|3rd)\s+Degree$/i.test(t)||/Notes on Ritual/i.test(t)){out.splice(i,1);continue;}
+    if(/^[A-Z][A-Z .'-]{3,40}$/.test(t)&&!/^(WM|SW|JW|IG|SD|JD|ALL)\b/.test(t)&&t.split(' ').length<=5)out[i].s='['+t.charAt(0)+t.slice(1).toLowerCase()+']';
+  }
+  const gaps=[];for(let i=1;i<out.length;i++)gaps.push(out[i].yc-out[i-1].yc);const step=[...gaps].sort((a,b)=>a-b)[Math.floor(gaps.length*0.3)]||lh*1.5;
+  out.forEach((o,i)=>o.para=i===0||(o.yc-out[i-1].yc)>step*1.35);
   // join wrapped rows: a new speech starts on an indented row or a row that begins with a speaker
   const lines=[];out.forEach(o=>{o.s=o.s.replace(/^1G\b/,'IG').replace(/^[^A-Za-z\[]+/,'');if(!o.s)return;
     const startsSpeaker=SPK.test(o.s)||/^[A-Z]{2,}\b/.test(o.s)||/^Tyler\b/.test(o.s);
-    if(!lines.length||o.indented||startsSpeaker)lines.push(o.s);else lines[lines.length-1]+=' '+o.s;});
+    const heading=/^\[[A-Z][a-z]+( [a-z]+){0,4}\]$/.test(o.s);
+    if(!lines.length||startsSpeaker||heading||((o.indented||o.para)&&o.s.startsWith('[')&&/[.!?)\]]$/.test(lines[lines.length-1])))lines.push(o.s);else lines[lines.length-1]=joinWrap(lines[lines.length-1],o.s);});
+  lines.page=page;
   const KN={one:1,two:2,three:3,four:4,five:5};
   return lines.map(l=>l.replace(/[“”]/g,'').replace(/\]\s*\[/g,' ')
       .replace(/\[\W*(one|two|three)(\s+distinct)?\s*([^\]]*)\]/gi,(m,n,d,rest)=>'('+KN[n.toLowerCase()]+'k)'+(rest.trim()?' ['+rest.trim()+']':''))
       .replace(/\(\dk\)\s*[^A-Za-z(\[]*\s*(?=[A-Z]{2,}\s*\()/g,m=>m.trim().replace(/\s.*$/,'')+'\n')
       .replace(/\s[-–—]+[a-z]?\s/g,' — ')
       .replace(/^([A-Z][A-Za-z]{0,10}),?\s+(?=[A-Z][a-z])/,'$1 — ')
-      .replace(/^(OPENING|CLOSING)\b.*$/,''))
+      .replace(/^\[?(Opening|Closing|OPENING|CLOSING)\]?$/,''))
     .join('\n').split('\n').map(x=>x.trim().replace(/\b1s\b/g,'is').replace(/\bty led\b/g,'tyled')).filter(x=>x&&!/Notes on Ritual/i.test(x))
     .reduce((acc,x)=>{const prev=acc[acc.length-1];if(prev&&/^[A-Z][A-Za-z]{1,10},?$/.test(prev)&&/^[\[(—]/.test(x))acc[acc.length-1]=prev.replace(/,$/,'')+' '+x;else acc.push(x);return acc;},[])
-    .join('\n');
+    .join('\n')+'\u0000'+(page==null?'':page);
+}
+function joinWrap(a,b){if(/[A-Za-z]-$/.test(a)&&/^[a-z]/.test(b))return a.slice(0,-1)+b;if(/[A-Za-z]-\]$/.test(a)&&/^\[?[a-z]/.test(b))return a.slice(0,-2)+b.replace(/^\[/,'');return a+' '+b;}
+async function scanImages(files,raw,after){
+  const box=$('#ocr');box.hidden=false;box.textContent='Loading the page reader (first time only)…';
+  let worker;const pages=[];
+  try{await loadTess();
+    worker=await Tesseract.createWorker('eng',1,Object.assign({},TESS.opts||{}));
+    await worker.setParameters({tessedit_pageseg_mode:'4'});
+    for(let k=0;k<files.length;k++){
+      box.textContent='Reading page '+(k+1)+' of '+files.length+'…';
+      const [bc,rc]=await splitColours(files[k]);
+      const a=await worker.recognize(bc);const b=await worker.recognize(rc);
+      const [text,pg]=rebuild(a.data.words||[],b.data.words||[]).split('\u0000');
+      pages.push({text,page:pg===''?null:+pg,t:files[k].lastModified||k,k});
+    }
+    const numbered=pages.every(p=>p.page!=null);
+    pages.sort((x,y)=>numbered?x.page-y.page:(x.t-y.t||x.k-y.k));
+    let all=raw.value.trim();
+    pages.forEach(p=>{if(!p.text)return;const first=p.text.split('\n')[0];
+      const cont=all&&!SPK.test(first)&&!/^(\[|[A-Z]{2,}\b|Tyler\b)/.test(first);
+      all=cont?(()=>{const L=all.split('\n');L[L.length-1]=joinWrap(L[L.length-1],first);return L.concat(p.text.split('\n').slice(1)).join('\n');})():(all?all+'\n':'')+p.text;});
+    raw.value=all;
+    box.textContent=files.length+' page'+(files.length>1?'s':'')+' added'+(numbered&&files.length>1?' in page order':'')+'. Check it: fix any misread words, add gavel knocks like (1k), and put secret words in {braces}.';after();
+  }catch(e){console.error(e);box.textContent='Could not read that. Use clear photos or screenshots, or type the words in.';}
+  finally{try{worker&&worker.terminate();}catch(e){}}
 }
 async function scanImage(file,raw,after){
   const box=$('#ocr');box.hidden=false;box.textContent='Loading the page reader (first time only)…';
