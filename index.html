@@ -367,7 +367,7 @@ async function splitColours(file){
 }
 function rebuild(blackWords,redWords){
   const all=blackWords.map(w=>({...w,red:false})).concat(redWords.map(w=>({...w,red:true})))
-    .filter(w=>(/\.{3,}|…/.test(w.text))||(/^\d{1,4}$/.test(w.text)&&w.confidence>50&&!w.red)||(/[A-Za-z]/.test(w.text)&&w.confidence>(w.red?55:35)&&!(w.text.replace(/[^A-Za-z]/g,'').length<=2&&w.confidence<70&&!/^(a|I|O|to|of|in|is|it|on|at|by|be|we|my|me|he|do|so|no|or|an|as|if|up|us|WM|SW|JW|IG|SD|JD|DC|IPM)$/.test(w.text.replace(/[^A-Za-z]/g,'')))));
+    .filter(w=>(/\.{3,}|…/.test(w.text))||(/^\d{1,4}$/.test(w.text)&&w.confidence>50&&!w.red)||(/[A-Za-z]/.test(w.text)&&w.confidence>(w.red?55:35)&&!(w.text.replace(/[^A-Za-z]/g,'').length<=2&&w.confidence<70&&!/^(a|I|O|to|of|in|is|it|on|at|by|be|we|my|me|he|do|so|no|or|an|as|if|up|us|g|WM|SW|JW|IG|SD|JD|DC|IPM)$/.test(w.text.replace(/[^A-Za-z]/g,'')))));
   if(!all.length)return '';
   const hs=all.map(w=>w.bbox.y1-w.bbox.y0).sort((a,b)=>a-b);const lh=hs[Math.floor(hs.length/2)]||20;
   all.forEach(w=>w.yc=(w.bbox.y0+w.bbox.y1)/2);all.sort((a,b)=>a.yc-b.yc);
@@ -386,6 +386,9 @@ function rebuild(blackWords,redWords){
     out.push({s:s.replace(/\[\s+/g,'[').replace(/\s+\]/g,']'),indented,yc:r.yc});
   });
   let page=null,head='';
+  {const ys=all.map(w=>w.yc);const top=Math.min(...ys),bot=Math.max(...ys);const pn=all.filter(w=>/^\d{1,4}$/.test(w.text)&&(w.yc-top<lh*3||bot-w.yc<lh*3)).sort((a,b)=>b.confidence-a.confidence)[0];if(pn)page=+pn.text;}
+  while(out.length&&/^\d{1,4}$/.test(out[0].s.trim())){page=+out[0].s.trim();out.shift();}
+  if(out.length&&/^[A-Z][a-z]+( [A-Z]?[a-z]+){0,2}$/.test(out[0].s.trim())&&!/^(Tyler|Brethren)$/.test(out[0].s.trim())){head=out[0].s.trim();out.shift();}
   for(let i=out.length-1;i>=0;i--){const t=out[i].s.trim();
     if(/^\d{1,4}$/.test(t)){if(page==null)page=+t;out.splice(i,1);continue;}
     if(/^(First|Second|Third|1st|2nd|3rd)\s+Degree$/i.test(t)){head=t.replace(/\b\w/g,c=>c.toUpperCase());out.splice(i,1);continue;}
@@ -402,8 +405,11 @@ function rebuild(blackWords,redWords){
   lines.page=page;
   const KN={one:1,two:2,three:3,four:4,five:5};
   return lines.map(l=>l.replace(/[“”]/g,'').replace(/\]\s*\[/g,' ')
+      .replace(/\[([^\]]*?)\s*\b(one|two|three)(\s+distinct)?\]\s*g\b\.?/gi,(m,pre,n)=>(pre.trim()?'['+pre.trim()+'] ':'')+'('+KN[n.toLowerCase()]+'k)')
+      .replace(/^\*\s*/,'')
       .replace(/\[\W*(one|two|three)(\s+distinct)?\s*([^\]]*)\]/gi,(m,n,d,rest)=>'('+KN[n.toLowerCase()]+'k)'+(rest.trim()?' ['+rest.trim()+']':''))
-      .replace(/\(\dk\)\s*[^A-Za-z(\[]*\s*(?=[A-Z]{2,}\s*\()/g,m=>m.trim().replace(/\s.*$/,'')+'\n')
+      .replace(/\((\d)k\)\s*g\b\.?\s*/g,'($1k) ').replace(/\((\d)k\)\s*g(?=[A-Z])/g,'($1k) ')
+      .replace(/\(\dk\)\s*[^A-Za-z(\[]*\s*(?=[A-Z]{2,}\.?\s*\()/g,m=>m.trim().replace(/\s.*$/,'')+'\n')
       .replace(/\s[-–—]+[a-z]?\s/g,' — ')
       .replace(/^([A-Z][A-Za-z]{0,10}),?\s+(?=[A-Z][a-z])/,'$1 — ')
       .replace(/^\[?(Opening|Closing|OPENING|CLOSING)\]?$/,''))
@@ -426,7 +432,8 @@ async function scanImages(files,raw,after){
       if(hd&&!foundHead)foundHead=hd;
       pages.push({text,page:pg===''?null:+pg,t:files[k].lastModified||k,k});
     }
-    const numbered=pages.every(p=>p.page!=null);
+    const numbered=pages.filter(p=>p.page!=null).length>=Math.max(1,pages.length-1);window.__pages=pages.map(p=>p.page);
+    if(numbered){pages.forEach((p,i)=>{if(p.page==null){const prev=pages[i-1];p.page=prev&&prev.page!=null?prev.page+0.5:-1;}});}
     pages.sort((x,y)=>numbered?x.page-y.page:(x.t-y.t||x.k-y.k));
     let all=raw.value.trim();
     pages.forEach(p=>{if(!p.text)return;const first=p.text.split('\n')[0];
