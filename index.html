@@ -91,6 +91,21 @@ textarea{min-height:46vh;resize:vertical;font-family:ui-monospace,Menlo,Consolas
 .readline.me{background:var(--gold-soft);margin:0 -10px;padding:8px 10px;border-radius:8px;border:0}
 .confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--bad-bg);color:var(--bad);border-radius:10px;padding:10px}
 code{background:var(--bg);padding:1px 5px;border-radius:5px;font-size:.9em}
+:root{--red:#b8322a}
+@media (prefers-color-scheme:dark){:root{--red:#ff8f7a}}
+.act{color:var(--red);font-style:italic;font-size:.92em}
+.mine .act{font-size:.8em}
+.knock{display:inline-flex;align-items:center;gap:1px;color:var(--ink);vertical-align:-0.15em;white-space:nowrap}
+.knock svg{width:1.15em;height:1.15em}
+.knock b{font-size:.75em;margin-left:2px;color:var(--muted)}
+.dir{color:var(--red);font-style:italic;padding:6px 0}
+.skipbar{display:flex;align-items:center;gap:8px;width:100%;justify-content:center;background:var(--bg);border:1px dashed var(--line);color:var(--muted);font-weight:600;min-height:40px;border-radius:8px;margin:6px 0}
+.skipnote{font-size:.85rem;color:var(--muted);display:flex;align-items:center;gap:6px}
+.gavelpad{display:flex;flex-direction:column;align-items:center;gap:8px}
+.gavelbtn{width:120px;height:72px;border-radius:14px;background:var(--surface);border:2px solid var(--ink);display:grid;place-items:center;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+.gavelbtn svg{width:44px;height:44px}
+.gavelbtn.hit{transform:scale(.94);background:var(--gold-soft)}
+.taps{font:700 1.4rem var(--display);font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -103,88 +118,108 @@ code{background:var(--bg);padding:1px 5px;border-radius:5px;font-size:.9em}
 'use strict';
 /* ========== Storage (this phone only) ========== */
 const KEY='ritual-rehearsal.v1';
-let state={scripts:[],stats:{},settings:{lang:'en-GB',local:true,cues:true,rate:1}};
+let state={scripts:[],stats:{},settings:{lang:'en-GB',local:true,cues:true,rate:1,sound:true}};
 function load(){try{const s=JSON.parse(localStorage.getItem(KEY)||'null');if(s&&s.scripts)state=Object.assign(state,s,{settings:Object.assign(state.settings,s.settings||{})});}catch(e){}}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){toast('Could not save on this phone');}}
 load();
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist();}catch(e){}
 
-/* ========== Text helpers ========== */
+/* ========== Script format ==========
+   WM — Brethren, assist me to open the Lodge.      spoken words after the dash
+   JW [names IG] — Bro ......, see that ...          [square brackets] = actions (red, never checked)
+   WM (1k)                                           (1k) / (3k) = gavel knocks
+   [The Brethren assemble in their places.]          a line in brackets = stage direction
+   {word}                                            secret word, saved as first letter only
+   ......                                            a name, e.g. Bro ......  (say any name)
+*/
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>Math.random().toString(36).slice(2,10);
-// Secret words: anything typed in {curly braces} is cut down to its first letter BEFORE saving.
-function maskSecrets(text){return text.replace(/\{([^}]*)\}/g,(m,w)=>{const c=(w.trim()[0]||'?').toUpperCase();return '{'+c+'}';});}
+function maskSecrets(text){return text.replace(/\{([^}]*)\}/g,(m,w)=>'{'+((w.trim()[0]||'?').toUpperCase())+'}');}
+const SPK=/^\*?\s*([A-Z][A-Za-z.'&]{0,11}(?:\s[A-Z][A-Za-z.]{0,11})?)\s*,?\s*(?:[:—–]|-\s|(?=\[|\(\d+\s*k\)))\s*(.*)$/;
 function parseScript(raw){
   const lines=[];let cur=null;
   maskSecrets(raw).split(/\r?\n/).forEach(l=>{
-    const t=l.trim(); if(!t)return;
-    const m=t.match(/^([A-Za-z][A-Za-z0-9 .'&\-]{0,24}?)\s*:\s*(.+)$/);
-    if(m){cur={who:m[1].trim().toUpperCase(),text:m[2].trim()};lines.push(cur);}
+    const t=l.trim().replace(/^\*\s*/,'').replace(/\*$/,''); if(!t)return;
+    if(t[0]==='['){cur={who:'',text:t};lines.push(cur);return;}
+    const m=t.match(SPK);
+    if(m){cur={who:m[1].trim().toUpperCase().replace(/\.$/,''),text:m[2].trim()};lines.push(cur);}
     else if(cur){cur.text+=' '+t;}
-    else{cur={who:'?',text:t};lines.push(cur);}
+    else{cur={who:'',text:t.startsWith('[')?t:'['+t+']'};lines.push(cur);}
   });
   return lines;
 }
-function toRaw(lines){return lines.map(l=>l.who+': '+l.text).join('\n');}
-function speakers(lines){const s=[];lines.forEach(l=>{if(!s.includes(l.who))s.push(l.who)});return s;}
+function toRaw(lines){return lines.map(l=>l.who?l.who+(l.text.startsWith('[')||/^\(\d+\s*k\)/.test(l.text)?' ':' — ')+l.text:l.text).join('\n');}
+function speakers(lines){const s=[];lines.forEach(l=>{if(l.who&&!s.includes(l.who))s.push(l.who)});return s;}
 function hash(s){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return (h>>>0).toString(36);}
-const NUM={'0':'zero','1':'one','2':'two','3':'three','4':'four','5':'five','6':'six','7':'seven','8':'eight','9':'nine','10':'ten','11':'eleven','12':'twelve','1st':'first','2nd':'second','3rd':'third'};
+const NUM={'0':'zero','1':'one','2':'two','3':'three','4':'four','5':'five','6':'six','7':'seven','8':'eight','9':'nine','10':'ten','11':'eleven','12':'twelve','1st':'first','2nd':'second','3rd':'third','bro':'brother','bros':'brethren','wm':'worshipful','w':'worshipful'};
 function norm(w){w=w.toLowerCase().replace(/[’']/g,'').replace(/[^a-z0-9]/g,'');return NUM[w]||w;}
-// Tokens of a stored line for display + checking
 function tokens(text){
-  return text.split(/\s+/).filter(Boolean).map(raw=>{
-    const m=raw.match(/^([^{]*)\{(.)\}(.*)$/);
-    if(m)return{raw,secret:true,letter:m[2],pre:m[1],post:m[3],n:''};
-    return{raw,secret:false,n:norm(raw)};
-  }).filter(t=>t.secret||t.n);
+  const out=[];const re=/\[([^\]]*)\]|\((\d+)\s*k\)|(\S+)/g;let m;
+  while((m=re.exec(text))){
+    if(m[1]!=null){out.push({kind:'act',raw:m[1]});continue;}
+    if(m[2]){out.push({kind:'knock',n:+m[2]});continue;}
+    const raw=m[3];const s=raw.match(/^([^{]*)\{(.)\}(.*)$/);
+    if(s)out.push({kind:'word',raw,secret:true,opt:true,letter:s[2],pre:s[1],post:s[3],n:''});
+    else if(/(\.{3,}|…)/.test(raw)&&!/[A-Za-z]/.test(raw))out.push({kind:'word',raw,name:true,opt:true,n:''});
+    else{const n=norm(raw);out.push(n?{kind:'word',raw,n}:{kind:'punct',raw});}
+  }
+  return out;
 }
+const words=t=>tokens(t).filter(x=>x.kind==='word');
+const knockTotal=t=>tokens(t).filter(x=>x.kind==='knock').reduce((a,b)=>a+b.n,0);
+const isSpoken=l=>l.who&&(words(l.text).length||knockTotal(l.text));
 function lev(a,b){if(a===b)return 0;const m=a.length,n=b.length;if(!m)return n;if(!n)return m;let p=Array.from({length:n+1},(_,i)=>i);for(let i=1;i<=m;i++){const c=[i];for(let j=1;j<=n;j++)c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));p=c;}return p[n];}
 function similar(a,b){if(a===b)return 'ok';const L=Math.max(a.length,b.length);const d=lev(a,b);const tol=L>=7?2:L>=4?1:0;return d<=tol?'close':null;}
 
-/* Word-by-word alignment of what was said against the line (edit-distance DP).
-   Secret words are optional: say them, mouth them or skip them — never penalised. */
+/* Word-by-word alignment (edit-distance DP). Secret words and names are optional. */
 function compare(text,spoken){
-  const E=tokens(text);const H=spoken.split(/\s+/).map(norm).filter(Boolean);
+  const E=words(text);const H=spoken.split(/\s+/).map(norm).filter(Boolean);
   const n=E.length,m=H.length,INF=1e9;
   const D=Array.from({length:n+1},()=>new Array(m+1).fill(INF));const B=Array.from({length:n+1},()=>new Array(m+1));
   D[0][0]=0;
   for(let i=0;i<=n;i++)for(let j=0;j<=m;j++){
     const cur=D[i][j];if(cur>=INF)continue;
-    if(i<n){const e=E[i];const c=cur+(e.secret?0:1);if(c<D[i+1][j]){D[i+1][j]=c;B[i+1][j]=['del'];}}
+    if(i<n){const c=cur+(E[i].opt?0:1);if(c<D[i+1][j]){D[i+1][j]=c;B[i+1][j]=['del'];}}
     if(j<m){const c=cur+1;if(c<D[i][j+1]){D[i][j+1]=c;B[i][j+1]=['ins'];}}
     if(i<n&&j<m){const e=E[i];let c,k;
       if(e.secret){c=cur+(H[j][0]===e.letter.toLowerCase()?0:0.3);k='secret';}
+      else if(e.name){c=cur+0.1;k='name';}
       else{const s=similar(e.n,H[j]);if(s==='ok'){c=cur;k='ok';}else if(s==='close'){c=cur+0.25;k='close';}else{c=cur+1.2;k='wrong';}}
       if(c<D[i+1][j+1]){D[i+1][j+1]=c;B[i+1][j+1]=[k,H[j]];}}
   }
   const out=new Array(n);const extra=[];let i=n,j=m;
   while(i>0||j>0){const b=B[i][j];if(!b)break;
-    if(b[0]==='del'){i--;out[i]={t:E[i],k:E[i].secret?'secret':'miss'};}
+    if(b[0]==='del'){i--;out[i]={k:E[i].secret?'secret':E[i].name?'name':'miss'};}
     else if(b[0]==='ins'){j--;extra.unshift(H[j]);}
-    else{i--;j--;out[i]={t:E[i],k:b[0],heard:b[1]};}}
-  const scored=out.filter(o=>!o.t.secret);const good=scored.filter(o=>o.k==='ok'||o.k==='close').length;
-  const score=scored.length?Math.round(100*good/scored.length):100;
-  return{words:out,extra,score};
+    else{i--;j--;out[i]={k:b[0],heard:b[1]};}}
+  const scored=E.map((e,x)=>[e,out[x]]).filter(p=>!p[0].opt);const good=scored.filter(p=>p[1].k==='ok'||p[1].k==='close').length;
+  return{res:out,extra,score:scored.length?Math.round(100*good/scored.length):100};
 }
 
-/* ========== Rendering helpers ========== */
-function renderWord(t,mode){
+/* ========== Rendering ========== */
+const GAVEL='<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><g transform="rotate(-40 10 9)"><rect x="4" y="3" width="12" height="6.5" rx="1.6"/><rect x="8.8" y="9" width="2.4" height="11" rx="1.1"/></g><rect x="12" y="20.5" width="10" height="2.5" rx="1"/></svg>';
+function knockHtml(n,mode){if(mode==='hidden')return '<span class="knock" title="Knocks">'+GAVEL+'<b>?</b></span>';return '<span class="knock" title="'+n+' knock'+(n>1?'s':'')+'">'+GAVEL.repeat(Math.min(n,5))+'<b>×'+n+'</b></span>';}
+function wordHtml(t,mode){
   if(t.secret)return esc(t.pre)+'<span class="secret" title="Secret word">'+esc(t.letter)+'</span>'+esc(t.post);
+  if(t.name)return '<span class="muted">…</span>';
   if(mode==='letters'){const m=t.raw.match(/^([^A-Za-z0-9]*)([A-Za-z0-9])[A-Za-z0-9'’\-]*(.*)$/);return m?esc(m[1]+m[2]+m[3]):esc(t.raw);}
   return esc(t.raw);
 }
-function renderLine(text,mode){
-  if(mode==='hidden'){const c=tokens(text).length;return '<span class="hiddenline">'+'• '.repeat(Math.min(c,60)).trim()+'</span> <span class="muted small">('+c+' words)</span>';}
-  return text.split(/\s+/).filter(Boolean).map(raw=>{const t=tokens(raw)[0];return t?renderWord(t,mode):esc(raw);}).join(' ');
-}
-function renderResult(r){
-  const w=r.words.map(o=>{
-    if(o.k==='secret')return renderWord(o.t,'full');
-    const label=esc(o.t.raw);
-    if(o.k==='wrong')return '<span class="w wrong">'+label+'<sub>'+esc(o.heard)+'</sub></span>';
-    return '<span class="w '+o.k+'">'+label+'</span>';
-  }).join(' ');
-  return w;
+// mode: full | letters | hidden ; res: optional compare result for word colouring
+function renderLine(text,mode,res){
+  const T=tokens(text);let wi=0;const parts=[];let hiddenRun=0;
+  const flush=()=>{if(hiddenRun){parts.push('<span class="hiddenline">'+'• '.repeat(Math.min(hiddenRun,40)).trim()+'</span>');hiddenRun=0;}};
+  T.forEach(t=>{
+    if(t.kind==='act'){flush();parts.push('<span class="act">'+esc(t.raw)+'</span>');return;}
+    if(t.kind==='knock'){flush();parts.push(knockHtml(t.n,res?'full':mode));return;}
+    if(t.kind==='punct'){if(mode!=='hidden'||res)parts.push(esc(t.raw));return;}
+    const r=res?res.res[wi]:null;wi++;
+    if(r){if(r.k==='secret'||r.k==='name'){parts.push(wordHtml(t,'full'));return;}
+      parts.push(r.k==='wrong'?'<span class="w wrong">'+esc(t.raw)+'<sub>'+esc(r.heard)+'</sub></span>':'<span class="w '+r.k+'">'+esc(t.raw)+'</span>');return;}
+    if(mode==='hidden'&&!t.secret){hiddenRun++;return;}
+    parts.push(wordHtml(t,mode));
+  });flush();
+  return parts.join(' ');
 }
 function pill(score){if(score==null)return '<span class="pill">new</span>';const c=score>=90?'good':score>=70?'mid':'low';return '<span class="pill '+c+'">'+score+'%</span>';}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,2600);}
@@ -193,27 +228,27 @@ const app=document.getElementById('app');
 function getScript(id){return state.scripts.find(s=>s.id===id);}
 function statFor(s,line){return (state.stats[s.id]||{})[hash(line.who+'|'+line.text)];}
 function setStat(s,line,score){const k=hash(line.who+'|'+line.text);state.stats[s.id]=state.stats[s.id]||{};const o=state.stats[s.id][k]||{tries:0,best:0};o.tries++;o.last=score;o.best=Math.max(o.best,score);o.at=Date.now();state.stats[s.id][k]=o;save();}
+const isMine=(s,l)=>!!l.who&&(s.parts||[]).includes(l.who)&&isSpoken(l);
 
 /* ========== Screens ========== */
 let view={name:'home'};
 function go(v){stopListening();try{speechSynthesis.cancel()}catch(e){}view=v;render();window.scrollTo(0,0);}
 function render(){({home:Home,edit:Edit,practice:Practice,read:Read,settings:Settings})[view.name]();}
-
 function header(title,back){return '<header class="top">'+(back?'<button class="ghost" id="back" aria-label="Back">‹ Back</button>':'')+'<h1>'+esc(title)+'</h1></header><div class="pave" aria-hidden="true"></div>';}
 function bindBack(to){const b=$('#back');if(b)b.onclick=()=>go(to||{name:'home'});}
 
 function Home(){
   const items=state.scripts.map(s=>{
-    const mine=s.lines.filter(l=>(s.parts||[]).includes(l.who));
+    const mine=s.lines.filter(l=>isMine(s,l));
     const sc=mine.map(l=>statFor(s,l)).filter(Boolean).map(x=>x.last);
     const avg=sc.length?Math.round(sc.reduce((a,b)=>a+b,0)/sc.length):null;
-    return '<div class="item"><div class="grow"><b>'+esc(s.name)+'</b><span class="muted small">'+s.lines.length+' lines · '+(s.parts&&s.parts.length?'my part: '+esc(s.parts.join(', ')):'no part chosen')+'</span></div>'+pill(avg)+
+    return '<div class="item"><div class="grow"><b>'+esc(s.name)+'</b><span class="muted small">'+mine.length+' of my lines · '+(s.parts&&s.parts.length?esc(s.parts.join(', ')):'no part chosen')+'</span></div>'+pill(avg)+
       '<button class="primary" data-act="practice" data-id="'+s.id+'">Practise</button></div>'+
       '<div class="row" style="margin-top:-6px;justify-content:flex-end"><button class="ghost" data-act="read" data-id="'+s.id+'">Read through</button><button class="ghost" data-act="edit" data-id="'+s.id+'">Edit</button></div>';
   }).join('');
   app.innerHTML=header('Ritual Rehearsal')+
     '<div class="note">🔒 Your words are stored <b>only on this phone</b>. Nothing is uploaded. Secret words are saved as their first letter only.</div>'+
-    '<div class="list">'+(items||'<div class="card"><h2>No scripts yet</h2><p class="muted" style="margin:0">Add your first piece of ritual — type it, paste it, or scan a page. Or load the example to see how it works.</p><button id="example">Load example</button></div>')+'</div>'+
+    '<div class="list">'+(items||'<div class="card"><h2>No scripts yet</h2><p class="muted" style="margin:0">Add your first piece of ritual by typing, pasting or scanning a page. Or load the example to see how it works.</p><button id="example">Load example</button></div>')+'</div>'+
     '<button class="primary" id="add">+ Add a script</button>'+
     '<div class="card"><h2>Backup</h2><p class="muted small" style="margin:0">If Chrome clears this site’s data your scripts go with it. Save a backup file to your phone now and then.</p>'+
     '<div class="row"><button class="grow" id="export">Save backup</button><button class="grow" id="import">Restore backup</button></div></div>'+
@@ -224,20 +259,32 @@ function Home(){
   app.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>go({name:b.dataset.act,id:b.dataset.id}));
   $('#export').onclick=exportBackup;$('#import').onclick=()=>$('#importFile').click();
 }
-const EXAMPLE=`WM: Brother Junior Warden, what is the first care of every member of this practice?
-JW: To see that the door is properly guarded and the room secure, Worshipful Master.
-WM: Direct that duty to be done.
-JW: Brother Guard, see that the door is closed and that we are {secure}.
-G: The door is closed and the room is secure.
-JW: Worshipful Master, the door is closed and all is well.`;
+const EXAMPLE=`[The members take their seats.]
+WM (1k)
+SW (1k)
+JW (1k)
+WM — Members, please help me open the practice.
+ALL [stand]
+WM [turns to JW] — Bro ......, what is our first duty?
+JW — To check that the room is properly {secured}.
+WM — Please see to it.
+JW [turns to G] — Bro ......, check that the room is secure.
+G [goes to the door, knocks three times, returns to his place] (3k)
+Doorkeeper [answers with the same knocks] (3k)
+G [names JW] — Bro ......, the room is secure.
+JW (3k) [then to WM] — Chairman, the room is secure.
+WM — Thank you, Brother.`;
 
 function Edit(){
   const s=view.id?getScript(view.id):null;
   app.innerHTML=header(s?'Edit script':'New script',true)+
     '<div class="card"><label for="name">Name</label><input type="text" id="name" placeholder="e.g. Opening, 1st Degree" value="'+esc(s?s.name:'')+'">'+
     '<label for="raw">Words</label>'+
-    '<div class="note small">One line per speech: <code>WM: text</code>, <code>SW: text</code>, <code>Cand: text</code>…<br>Put secret words in curly braces like <code>{word}</code> or just <code>{W}</code> — only the first letter is ever saved.</div>'+
-    '<textarea id="raw" spellcheck="false" placeholder="WM: …&#10;SW: …">'+esc(s?toRaw(s.lines):'')+'</textarea>'+
+    '<div class="note small">Type it like the book, one speech per line:<br>'+
+    '<code>WM — Brethren, assist me to open the Lodge.</code><br>'+
+    '<code>JW [names IG] — Bro ......, see that…</code><br>'+
+    '<code>WM (1k)</code> gavel knocks · <code>[red text]</code> actions · <code>{word}</code> secret (first letter only is saved) · <code>......</code> a name</div>'+
+    '<textarea id="raw" spellcheck="false" placeholder="WM — …&#10;JW [names IG] — …">'+esc(s?toRaw(s.lines):'')+'</textarea>'+
     '<div class="row"><button class="grow" id="scan">📷 Scan a page</button></div>'+
     '<div id="ocr" class="muted small" hidden></div>'+
     '<div id="partsBox"></div>'+
@@ -249,7 +296,7 @@ function Edit(){
   function drawParts(){
     const sp=speakers(parseScript(raw.value));
     parts=parts.filter(p=>sp.includes(p));
-    $('#partsBox').innerHTML=sp.length?'<label>Which part is yours?</label><div class="chips" style="margin-top:6px">'+sp.map(p=>'<button class="chip" aria-pressed="'+parts.includes(p)+'" data-p="'+esc(p)+'">'+esc(p)+'</button>').join('')+'</div>':'';
+    $('#partsBox').innerHTML=sp.length?'<label>Which parts are yours? (tick ALL too if you join in)</label><div class="chips" style="margin-top:6px">'+sp.map(p=>'<button class="chip" aria-pressed="'+parts.includes(p)+'" data-p="'+esc(p)+'">'+esc(p)+'</button>').join('')+'</div>':'';
     $('#partsBox').querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{const p=b.dataset.p;parts=parts.includes(p)?parts.filter(x=>x!==p):parts.concat(p);drawParts();});
   }
   raw.addEventListener('input',()=>{clearTimeout(drawParts._t);drawParts._t=setTimeout(drawParts,400);});
@@ -270,18 +317,82 @@ function Edit(){
   };
 }
 
-/* Local OCR — the photo is read on this phone (Tesseract runs in the browser), never uploaded */
+/* ========== Scanning (runs on this phone; the photo is never uploaded) ==========
+   Splits black print from red print by colour, reads each, then rebuilds the lines
+   with red words wrapped in [brackets]. */
+const TESS=window.TESS_BASE||{script:'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'};
 let tessLoading=null;
 function loadTess(){if(window.Tesseract)return Promise.resolve();if(tessLoading)return tessLoading;
-  tessLoading=new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';sc.onload=res;sc.onerror=()=>{tessLoading=null;rej(new Error('load'));};document.head.appendChild(sc);});return tessLoading;}
+  tessLoading=new Promise((res,rej)=>{const sc=document.createElement('script');sc.src=TESS.script;sc.onload=res;sc.onerror=()=>{tessLoading=null;rej(new Error('load'));};document.head.appendChild(sc);});return tessLoading;}
+async function splitColours(file){
+  const bmp=await createImageBitmap(file);
+  const target=2200;const sc=Math.min(2.5,target/Math.max(bmp.width,bmp.height));
+  const W=Math.round(bmp.width*sc),H=Math.round(bmp.height*sc);
+  const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');x.drawImage(bmp,0,0,W,H);
+  const d=x.getImageData(0,0,W,H).data;
+  // local background brightness on a coarse grid copes with uneven lighting and shadows
+  const G=48,gw=Math.ceil(W/G),gh=Math.ceil(H/G),bg=new Float32Array(gw*gh);
+  for(let gy=0;gy<gh;gy++)for(let gx=0;gx<gw;gx++){const v=[];for(let y=gy*G;y<Math.min(H,gy*G+G);y+=4)for(let x2=gx*G;x2<Math.min(W,gx*G+G);x2+=4){const i=(y*W+x2)*4;v.push(.3*d[i]+.59*d[i+1]+.11*d[i+2]);}v.sort((a,b)=>a-b);bg[gy*gw+gx]=v[Math.floor(v.length*.8)]||255;}
+  const mk=()=>{const k=document.createElement('canvas');k.width=W;k.height=H;const kx=k.getContext('2d');return [k,kx,kx.createImageData(W,H)];};
+  const [bc,bx,bi]=mk(),[rc,rx,ri]=mk();
+  for(let y=0;y<H;y++)for(let x2=0;x2<W;x2++){const i=(y*W+x2)*4;const r=d[i],g=d[i+1],b=d[i+2];const L=.3*r+.59*g+.11*b;const B=bg[Math.floor(y/G)*gw+Math.floor(x2/G)];
+    const dark=L<B*0.42;
+    const red=!dark&&L<B*0.75&&g<0.45*r&&b<0.4*r;
+    const bv=dark?0:255,rv=red?0:255;
+    bi.data[i]=bi.data[i+1]=bi.data[i+2]=bv;bi.data[i+3]=255;ri.data[i]=ri.data[i+1]=ri.data[i+2]=rv;ri.data[i+3]=255;}
+  bx.putImageData(bi,0,0);rx.putImageData(ri,0,0);
+  return [bc,rc];
+}
+function rebuild(blackWords,redWords){
+  const all=blackWords.map(w=>({...w,red:false})).concat(redWords.map(w=>({...w,red:true})))
+    .filter(w=>(/\.{3,}|…/.test(w.text))||(/[A-Za-z]/.test(w.text)&&w.confidence>(w.red?55:35)&&!(w.text.replace(/[^A-Za-z]/g,'').length<=2&&w.confidence<70&&!/^(a|I|O|to|of|in|is|it|on|at|by|be|we|my|me|he|do|so|no|or|an|as|if|up|us|WM|SW|JW|IG|SD|JD|DC|IPM)$/.test(w.text.replace(/[^A-Za-z]/g,'')))));
+  if(!all.length)return '';
+  const hs=all.map(w=>w.bbox.y1-w.bbox.y0).sort((a,b)=>a-b);const lh=hs[Math.floor(hs.length/2)]||20;
+  all.forEach(w=>w.yc=(w.bbox.y0+w.bbox.y1)/2);all.sort((a,b)=>a.yc-b.yc);
+  const rows=[];all.forEach(w=>{const r=rows.find(r=>Math.abs(r.yc-w.yc)<lh*0.6);if(r){r.w.push(w);r.yc=(r.yc*(r.w.length-1)+w.yc)/r.w.length;}else rows.push({yc:w.yc,w:[w]});});
+  rows.sort((a,b)=>a.yc-b.yc);
+  // drop the neighbouring page: words starting far right of the main text column
+  const x0s=rows.map(r=>Math.min(...r.w.map(w=>w.bbox.x0))).sort((a,b)=>a-b);const left=x0s[Math.floor(x0s.length*.2)]||0;
+  const rights=all.map(w=>w.bbox.x1).sort((a,b)=>a-b);const right=rights[Math.floor(rights.length*.9)]||1e9;
+  const out=[];
+  rows.forEach(r=>{
+    const ws=r.w.filter(w=>w.bbox.x0<right+lh*1.5).sort((a,b)=>a.bbox.x0-b.bbox.x0);if(!ws.length)return;
+    let s='',inRed=false;
+    ws.forEach(w=>{if(w.red&&!inRed){s+=(s?' ':'')+'[';inRed=true;}else if(!w.red&&inRed){s+='] ';inRed=false;}else if(s&&!s.endsWith('['))s+=' ';s+=w.text;});
+    if(inRed)s+=']';
+    const indented=Math.min(...ws.map(w=>w.bbox.x0))>left+lh*0.8;
+    out.push({s:s.replace(/\[\s+/g,'[').replace(/\s+\]/g,']'),indented});
+  });
+  // join wrapped rows: a new speech starts on an indented row or a row that begins with a speaker
+  const lines=[];out.forEach(o=>{o.s=o.s.replace(/^1G\b/,'IG').replace(/^[^A-Za-z\[]+/,'');if(!o.s)return;
+    const startsSpeaker=SPK.test(o.s)||/^[A-Z]{2,}\b/.test(o.s)||/^Tyler\b/.test(o.s);
+    if(!lines.length||o.indented||startsSpeaker)lines.push(o.s);else lines[lines.length-1]+=' '+o.s;});
+  const KN={one:1,two:2,three:3,four:4,five:5};
+  return lines.map(l=>l.replace(/[“”]/g,'').replace(/\]\s*\[/g,' ')
+      .replace(/\[\W*(one|two|three)(\s+distinct)?\s*([^\]]*)\]/gi,(m,n,d,rest)=>'('+KN[n.toLowerCase()]+'k)'+(rest.trim()?' ['+rest.trim()+']':''))
+      .replace(/\(\dk\)\s*[^A-Za-z(\[]*\s*(?=[A-Z]{2,}\s*\()/g,m=>m.trim().replace(/\s.*$/,'')+'\n')
+      .replace(/\s[-–—]+[a-z]?\s/g,' — ')
+      .replace(/^([A-Z][A-Za-z]{0,10}),?\s+(?=[A-Z][a-z])/,'$1 — ')
+      .replace(/^(OPENING|CLOSING)\b.*$/,''))
+    .join('\n').split('\n').map(x=>x.trim().replace(/\b1s\b/g,'is').replace(/\bty led\b/g,'tyled')).filter(x=>x&&!/Notes on Ritual/i.test(x))
+    .reduce((acc,x)=>{const prev=acc[acc.length-1];if(prev&&/^[A-Z][A-Za-z]{1,10},?$/.test(prev)&&/^[\[(—]/.test(x))acc[acc.length-1]=prev.replace(/,$/,'')+' '+x;else acc.push(x);return acc;},[])
+    .join('\n');
+}
 async function scanImage(file,raw,after){
-  const box=$('#ocr');box.hidden=false;box.textContent='Loading the text reader (first time only)…';
+  const box=$('#ocr');box.hidden=false;box.textContent='Loading the page reader (first time only)…';
+  let worker;
   try{await loadTess();
-    const r=await Tesseract.recognize(file,'eng',{logger:m=>{if(m.status==='recognizing text')box.textContent='Reading page… '+Math.round(m.progress*100)+'%';}});
-    const text=r.data.text.replace(/\n{2,}/g,'\n').trim();
+    const [bc,rc]=await splitColours(file);
+    worker=await Tesseract.createWorker('eng',1,Object.assign({logger:m=>{if(m.status==='recognizing text')box.textContent='Reading page… '+Math.round(m.progress*100)+'%';}},TESS.opts||{}));
+    await worker.setParameters({tessedit_pageseg_mode:'4'});
+    const a=await worker.recognize(bc);box.textContent='Reading red print…';
+    const b=await worker.recognize(rc);
+    const text=rebuild(a.data.words||[],b.data.words||[]);
+    if(!text)throw new Error('empty');
     raw.value=(raw.value.trim()?raw.value.trim()+'\n':'')+text;
-    box.textContent='Page added. Check it, add speaker labels (WM:, SW: …) and put secret words in {braces}.';after();
-  }catch(e){box.textContent='Could not read that photo. Try again in good light, or type the words in.';}
+    box.textContent='Page added. Check it: fix any misread words, add gavel knocks like (1k), and put secret words in {braces}.';after();
+  }catch(e){console.error(e);box.textContent='Could not read that photo. Hold the phone flat over the page in good light, or type the words in.';}
+  finally{try{worker&&worker.terminate();}catch(e){}}
 }
 
 /* ========== Speech ========== */
@@ -302,110 +413,147 @@ function begin(){
   rec.onresult=e=>{let fin='',interim='';for(let i=0;i<e.results.length;i++){const r=e.results[i];if(r.isFinal)fin+=' '+r[0].transcript;else interim+=' '+r[0].transcript;}
     heardFinal=(heardCarry+' '+fin).trim();onHeard&&onHeard((heardFinal+' '+interim).trim());};
   rec.onerror=e=>{if(e.error==='not-allowed'||e.error==='service-not-allowed'){listening=false;toast('Microphone blocked. Allow it in Chrome’s site settings.');onHeard&&onHeard(null);}
-    else if(e.error==='language-not-supported'&&rec.processLocally){state.settings.local=false;save();toast('On-device speech not ready — using Chrome’s online service.');}};
+    else if(e.error==='language-not-supported'&&rec.processLocally){state.settings.local=false;save();toast('On-device speech not ready, so using Chrome’s online service.');}};
   rec.onend=()=>{if(listening){heardCarry=heardFinal;try{begin();}catch(e){}}};
   try{rec.start();}catch(e){}
 }
 function stopListening(){listening=false;if(rec){try{rec.stop();}catch(e){}}}
-function sayCue(text,done){
-  try{if(!state.settings.cues||!window.speechSynthesis){done&&done();return;}
-    const u=new SpeechSynthesisUtterance(text.replace(/\{(.)\}/g,'$1'));u.lang=state.settings.lang;u.rate=state.settings.rate;
-    u.onend=()=>done&&done();u.onerror=()=>done&&done();speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){done&&done();}
+function cueText(lines){return lines.map(l=>words(l.text).map(w=>w.secret?w.letter:w.name?'':w.raw).join(' ')).filter(Boolean).join('. ');}
+function sayCue(text,force){
+  try{if((!state.settings.cues&&!force)||!window.speechSynthesis||!text)return;
+    const u=new SpeechSynthesisUtterance(text);u.lang=state.settings.lang;u.rate=state.settings.rate;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}
 }
+let actx=null;
+function knockSound(){if(!state.settings.sound)return;try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();const t=actx.currentTime;
+  const o=actx.createOscillator(),g=actx.createGain();o.type='triangle';o.frequency.setValueAtTime(180,t);o.frequency.exponentialRampToValueAtTime(60,t+0.12);
+  g.gain.setValueAtTime(0.9,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.15);o.connect(g).connect(actx.destination);o.start(t);o.stop(t+0.16);}catch(e){}
+  try{navigator.vibrate&&navigator.vibrate(25);}catch(e){}}
 
 /* ========== Practice ========== */
 let P=null;
+function myIdx(s){let idx=s.lines.map((l,i)=>i).filter(i=>isMine(s,s.lines[i]));
+  if(P.weak){const w=idx.filter(i=>{const st=statFor(s,s.lines[i]);return !st||st.last<90;});if(w.length)idx=w;}return idx;}
+function cuesFor(s,li){
+  // walk back to the last spoken line by someone else; keep directions in between; count what was skipped
+  const shown=[];let k=li-1;
+  for(;k>=0&&!isMine(s,s.lines[k]);k--){shown.unshift(s.lines[k]);if(isSpoken(s.lines[k]))break;}
+  let prevMine=k-1;while(prevMine>=0&&!isMine(s,s.lines[prevMine]))prevMine--;
+  const skipped=Math.max(0,(k-1)-prevMine);
+  return{shown,skipped};
+}
 function Practice(){
   const s=getScript(view.id);if(!s)return go({name:'home'});
-  if(!P||P.id!==s.id)P={id:s.id,mode:'letters',weak:false,pos:0,result:null,heard:'',reveal:false};
+  if(!P||P.id!==s.id)P={id:s.id,mode:'letters',weak:false,pos:0,result:null,heard:'',reveal:false,taps:0};
   const sp=speakers(s.lines);
   if(!s.parts||!s.parts.length){
     app.innerHTML=header(s.name,true)+'<div class="card"><h2>Which part is yours?</h2><div class="chips">'+sp.map(p=>'<button class="chip" data-p="'+esc(p)+'">'+esc(p)+'</button>').join('')+'</div></div>';
     bindBack();app.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{s.parts=[b.dataset.p];save();Practice();});return;
   }
-  let idx=s.lines.map((l,i)=>i).filter(i=>s.parts.includes(s.lines[i].who));
-  if(P.weak){const w=idx.filter(i=>{const st=statFor(s,s.lines[i]);return !st||st.last<90;});if(w.length)idx=w;}
+  const idx=myIdx(s);
+  if(!idx.length){app.innerHTML=header(s.name,true)+'<div class="card">None of your parts speak in this script. Choose your part under Edit.</div>';bindBack();return;}
   if(P.pos>=idx.length)P.pos=0;
   const li=idx[P.pos],line=s.lines[li];
-  // cues: the lines spoken by others immediately before mine
-  const cues=[];for(let k=li-1;k>=0&&!s.parts.includes(s.lines[k].who)&&cues.length<2;k--)cues.unshift(s.lines[k]);
+  const {shown,skipped}=cuesFor(s,li);
   const st=statFor(s,line);
+  const nWords=words(line.text).filter(w=>!w.opt).length, nKnocks=knockTotal(line.text);
   const modes=[['full','Full'],['letters','First letters'],['hidden','Hidden']];
+  const shownMode=P.reveal?'full':P.mode;
   app.innerHTML=header(s.name,true)+
     '<div class="seg" role="group" aria-label="How much to show">'+modes.map(m=>'<button data-mode="'+m[0]+'" aria-pressed="'+(P.mode===m[0])+'">'+m[1]+'</button>').join('')+'</div>'+
     '<div class="row"><label class="toggle grow"><input type="checkbox" id="weak" '+(P.weak?'checked':'')+'> Only lines under 90%</label><label class="toggle"><input type="checkbox" id="cuesOn" '+(state.settings.cues?'checked':'')+'> Read cues</label></div>'+
-    '<div class="row small muted"><span class="grow">Line '+(P.pos+1)+' of '+idx.length+(P.weak?' (weak lines)':'')+'</span>'+(st?'Last '+pill(st.last)+' · best '+st.best+'%':pill(null))+'</div>'+
+    '<div class="row small muted"><span class="grow">My line '+(P.pos+1)+' of '+idx.length+(P.weak?' (weak lines)':'')+'</span>'+(st?'Last '+pill(st.last)+' · best '+st.best+'%':pill(null))+'</div>'+
     '<div class="progress"><i style="width:'+Math.round(100*(P.pos+1)/idx.length)+'%"></i></div>'+
     '<div class="card">'+
-      (cues.length?cues.map(c=>'<div class="cue"><div class="who">'+esc(c.who)+'</div>'+renderLine(c.text,'full')+'</div>').join('')+'<button class="ghost" id="playCue" style="align-self:flex-start">▶ Hear cue</button>':'<div class="muted small">Your part opens here.</div>')+
-      '<div><div class="who">'+esc(line.who)+' — you</div><div class="mine" id="mine">'+(P.result?renderResult(P.result):renderLine(line.text,P.reveal?'full':P.mode))+'</div></div>'+
-      (P.result?'<div class="row"><span class="score">'+P.result.score+'%</span><span class="muted small grow">'+(P.result.score>=90?'Word perfect, or near enough.':P.result.score>=70?'Close. Red words were missed or wrong.':'Keep at it. Red words were missed or wrong.')+(P.result.extra.length?' '+P.result.extra.length+' extra word'+(P.result.extra.length>1?'s':'')+' heard.':'')+'</span></div>':'')+
+      (skipped?'<div class="skipnote">⏭ Skipped '+skipped+' line'+(skipped>1?'s':'')+' you’re not in</div>':'')+
+      (shown.length?shown.map(c=>c.who?'<div class="cue"><div class="who">'+esc(c.who)+'</div>'+renderLine(c.text,'full')+'</div>':'<div class="dir">'+renderLine(c.text,'full')+'</div>').join('')+(shown.some(isSpoken)?'<button class="ghost" id="playCue" style="align-self:flex-start">▶ Hear cue</button>':''):'<div class="muted small">Your part opens here.</div>')+
+      '<div><div class="who">'+esc(line.who)+' (you)</div><div class="mine" id="mine">'+renderLine(line.text,shownMode,P.result)+'</div></div>'+
+      (P.result?'<div class="row"><span class="score">'+P.result.score+'%</span><span class="muted small grow">'+P.result.msg+'</span></div>':'')+
       (!P.result&&P.mode!=='full'?'<button class="ghost" id="reveal" style="align-self:flex-start">'+(P.reveal?'Hide':'Peek')+'</button>':'')+
     '</div>'+
-    '<button class="mic" id="mic" aria-label="Start speaking">🎙</button>'+
-    '<div class="heard" id="heard" aria-live="polite">'+(P.result?'Heard: “'+esc(P.heard)+'”':'Tap the mic, say your line, then tap again to check.')+'</div>'+
+    (nKnocks?'<div class="gavelpad"><button class="gavelbtn" id="gavel" aria-label="Knock">'+GAVEL+'</button><div class="row"><span class="taps" id="taps">'+P.taps+'</span><span class="muted small">knock'+(P.taps===1?'':'s')+' given</span><button class="ghost" id="tapReset">Reset</button></div></div>':'')+
+    (nWords?'<button class="mic" id="mic" aria-label="Start speaking">🎙</button><div class="heard" id="heard" aria-live="polite">'+(P.result&&P.heard?'Heard: “'+esc(P.heard)+'”':(nKnocks?'Give the knocks, then tap the mic and say your words. Tap again to check.':'Tap the mic, say your line, then tap again to check.'))+'</div>'
+      :(!P.result?'<button class="primary" id="checkKnocks">Check knocks</button>':''))+
     '<div class="row"><button class="grow" id="prev" '+(P.pos===0?'disabled':'')+'>‹ Prev</button>'+(P.result?'<button class="grow" id="again">Try again</button>':'')+'<button class="primary grow" id="next">Next ›</button></div>'+
-    (SR?'':'<div class="note">This browser can’t listen. Open the app in Chrome on Android. You can still practise with Peek and self-check.</div>');
+    (SR?'':'<div class="note">This browser can’t listen. Open the app in Chrome on Android. You can still practise with Peek.</div>');
   bindBack();
   app.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{P.mode=b.dataset.mode;P.reveal=false;Practice();});
-  $('#weak').onchange=e=>{P.weak=e.target.checked;P.pos=0;P.result=null;Practice();};
+  $('#weak').onchange=e=>{P.weak=e.target.checked;P.pos=0;P.result=null;P.taps=0;Practice();};
   $('#cuesOn').onchange=e=>{state.settings.cues=e.target.checked;save();};
-  const pc=$('#playCue');if(pc)pc.onclick=()=>{const was=state.settings.cues;state.settings.cues=true;sayCue(cues.map(c=>c.text).join('. '));state.settings.cues=was;};
+  const pc=$('#playCue');if(pc)pc.onclick=()=>sayCue(cueText(shown),true);
   const rv=$('#reveal');if(rv)rv.onclick=()=>{P.reveal=!P.reveal;Practice();};
-  const move=d=>{P.pos=Math.max(0,P.pos+d);P.result=null;P.reveal=false;P.heard='';stopListening();Practice();
-    const s2=getScript(view.id);let id2=s2.lines.map((l,i)=>i).filter(i=>s2.parts.includes(s2.lines[i].who));
-    if(P.weak){const w=id2.filter(i=>{const q=statFor(s2,s2.lines[i]);return !q||q.last<90;});if(w.length)id2=w;}
-    const l2=id2[P.pos%id2.length];const cs=[];for(let k=l2-1;k>=0&&!s2.parts.includes(s2.lines[k].who)&&cs.length<2;k--)cs.unshift(s2.lines[k]);
-    if(cs.length&&d>0)sayCue(cs.map(c=>c.text).join('. '));};
+  const finish=(said)=>{
+    let r=nWords?compare(line.text,said||''):{res:words(line.text).map(()=>({k:'ok'})),extra:[],score:100};
+    let score=r.score;const knocksOK=P.taps===nKnocks;const msgs=[];
+    if(nKnocks){msgs.push(knocksOK?'Knocks right ('+nKnocks+').':'Knocks: you gave '+P.taps+', should be '+nKnocks+'.');score=nWords?Math.round(r.score*0.8+(knocksOK?20:0)):(knocksOK?100:0);}
+    if(nWords)msgs.push(r.score>=90?'Words spot on, or near enough.':r.score>=70?'Close. Red words were missed or wrong.':'Keep at it. Red words were missed or wrong.');
+    P.result=Object.assign(r,{score,msg:msgs.join(' ')});setStat(s,line,score);Practice();
+  };
+  const move=d=>{stopListening();P.pos=Math.max(0,P.pos+d);P.result=null;P.reveal=false;P.heard='';P.taps=0;Practice();
+    if(d>0){const s2=getScript(view.id);const id2=myIdx(s2);const c=cuesFor(s2,id2[P.pos%id2.length]);sayCue(cueText(c.shown));}};
   $('#prev').onclick=()=>move(-1);
   $('#next').onclick=()=>{if(P.pos+1>=idx.length){P.pos=-1;toast('Back to the start');}move(1);};
-  const ag=$('#again');if(ag)ag.onclick=()=>{P.result=null;P.heard='';Practice();};
+  const ag=$('#again');if(ag)ag.onclick=()=>{P.result=null;P.heard='';P.taps=0;Practice();};
+  const gv=$('#gavel');if(gv){gv.onpointerdown=e=>{e.preventDefault();if(P.result){P.result=null;P.taps=0;}P.taps++;knockSound();$('#taps').textContent=P.taps;gv.classList.add('hit');setTimeout(()=>gv.classList.remove('hit'),90);};
+    $('#tapReset').onclick=()=>{P.taps=0;$('#taps').textContent=0;};}
+  const ck=$('#checkKnocks');if(ck)ck.onclick=()=>finish('');
   const mic=$('#mic'),heard=$('#heard');
-  mic.onclick=async()=>{
+  if(mic)mic.onclick=async()=>{
     if(listening){stopListening();mic.classList.remove('on');
       setTimeout(()=>{const said=(heardFinal||P._live||'').trim();
         if(!said){heard.textContent='Didn’t catch anything. Tap the mic and try again.';return;}
-        P.heard=said;P.result=compare(line.text,said);setStat(s,line,P.result.score);Practice();},350);
+        P.heard=said;finish(said);},350);
       return;}
     try{speechSynthesis.cancel();}catch(e){}
-    P._live='';P.result=null;
+    P._live='';if(P.result){P.result=null;P.taps=0;$('#mine').innerHTML=renderLine(line.text,P.mode);}
     const ok=await startListening(t=>{if(t===null){mic.classList.remove('on');return;}P._live=t;heard.textContent=t||'Listening…';});
-    if(ok){mic.classList.add('on');mic.setAttribute('aria-label','Stop and check');heard.textContent='Listening… tap again when you’ve finished.';
-      if(P.result===null&&$('#mine'))$('#mine').innerHTML=renderLine(line.text,P.mode);}
+    if(ok){mic.classList.add('on');mic.setAttribute('aria-label','Stop and check');heard.textContent='Listening… tap again when you’ve finished.';}
   };
 }
 
 /* ========== Read through ========== */
-let readMode='full';
+let readMode='full',readSkip=true,readOpen=new Set();
 function Read(){
   const s=getScript(view.id);if(!s)return go({name:'home'});
+  const blocks=[];let run=[];
+  const lineHtml=(l)=>{const me=isMine(s,l);const st=me?statFor(s,l):null;
+    if(!l.who)return '<div class="dir">'+renderLine(l.text,'full')+'</div>';
+    return '<div class="readline'+(me?' me':'')+'"><div class="row"><span class="who grow">'+esc(l.who)+'</span>'+(me?pill(st?st.last:null):'')+'</div><div>'+renderLine(l.text,me?readMode:(readMode==='letters'?'letters':'full'))+'</div></div>';};
+  const flush=(i)=>{if(!run.length)return;
+    if(readSkip&&run.length>=4&&!readOpen.has(run[0].i)){const keep=run.slice(-1);const hid=run.slice(0,-1);
+      const who=[...new Set(hid.map(r=>r.l.who).filter(Boolean))].slice(0,4).join(', ');
+      blocks.push('<button class="skipbar" data-open="'+run[0].i+'">⋯ '+hid.length+' lines'+(who?' ('+esc(who)+')':'')+' · show</button>');keep.forEach(r=>blocks.push(lineHtml(r.l)));}
+    else run.forEach(r=>blocks.push(lineHtml(r.l)));run=[];};
+  s.lines.forEach((l,i)=>{if(isMine(s,l)){flush(i);blocks.push(lineHtml(l));}else run.push({l,i});});flush();
   app.innerHTML=header(s.name,true)+
     '<div class="seg" role="group">'+[['full','Full'],['letters','First letters'],['hidden','Hide mine']].map(m=>'<button data-mode="'+m[0]+'" aria-pressed="'+(readMode===m[0])+'">'+m[1]+'</button>').join('')+'</div>'+
-    '<div class="card">'+s.lines.map(l=>{const me=(s.parts||[]).includes(l.who);const st=me?statFor(s,l):null;
-      return '<div class="readline'+(me?' me':'')+'"><div class="row"><span class="who grow">'+esc(l.who)+'</span>'+(me?pill(st?st.last:null):'')+'</div><div>'+renderLine(l.text,me?readMode:(readMode==='letters'?'letters':'full'))+'</div></div>';}).join('')+'</div>';
+    '<label class="toggle"><input type="checkbox" id="skip" '+(readSkip?'checked':'')+'> Fold away long stretches I’m not in</label>'+
+    '<div class="card" style="gap:0">'+blocks.join('')+'</div>';
   bindBack();
   app.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{readMode=b.dataset.mode;Read();});
+  app.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>{readOpen.add(+b.dataset.open);Read();});
+  $('#skip').onchange=e=>{readSkip=e.target.checked;readOpen.clear();Read();};
 }
 
 /* ========== Settings ========== */
 function Settings(){
   const st=state.settings;
-  const voices=(()=>{try{return speechSynthesis.getVoices().filter(v=>v.lang.startsWith('en'))}catch(e){return[]}})();
   app.innerHTML=header('Settings',true)+
     '<div class="card"><label class="toggle"><input type="checkbox" id="local" '+(st.local?'checked':'')+'> Prefer on-device speech recognition</label>'+
-    '<p class="muted small" style="margin:0">When Chrome supports it, your voice is processed on the phone. Otherwise Chrome sends the audio to Google to turn it into words. Your scripts are never sent anywhere.</p></div>'+
+    '<p class="muted small" style="margin:0">When Chrome supports it, your voice is processed on the phone. Otherwise Chrome sends the audio to Google to turn it into words. Your scripts are never sent anywhere.</p>'+
+    '<label class="toggle"><input type="checkbox" id="sound" '+(st.sound?'checked':'')+'> Knock sound when tapping the gavel</label></div>'+
     '<div class="card"><label for="lang">Accent</label><select id="lang">'+[['en-GB','English (UK)'],['en-US','English (US)'],['en-IE','English (Ireland)'],['en-AU','English (Australia)']].map(o=>'<option value="'+o[0]+'"'+(st.lang===o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select>'+
     '<label for="rate">Cue reading speed</label><input type="range" id="rate" min="0.6" max="1.4" step="0.1" value="'+st.rate+'"></div>'+
-    '<div class="card"><h2>Tips</h2><ul class="small" style="margin:0;padding-left:1.2em"><li>Secret words show as a gold letter. Say them, mouth them or skip them — they never count against you.</li><li>Unusual words may be misheard. Amber words were close enough to count.</li><li>Add to your home screen: Chrome menu ⋮ → Add to Home screen.</li></ul></div>';
+    '<div class="card"><h2>Tips</h2><ul class="small" style="margin:0;padding-left:1.2em"><li>Secret words show as a gold letter and names as “…”. Say them, mouth them or skip them. They never count against you.</li><li>Red words are actions. They’re shown for context and never checked.</li><li>Lines with knocks show a gavel pad. Tap it the right number of times.</li><li>Add to your home screen: Chrome menu ⋮ → Add to Home screen.</li></ul></div>';
   bindBack();
   $('#local').onchange=e=>{st.local=e.target.checked;save();};
+  $('#sound').onchange=e=>{st.sound=e.target.checked;save();};
   $('#lang').onchange=e=>{st.lang=e.target.value;save();};
   $('#rate').onchange=e=>{st.rate=parseFloat(e.target.value);save();};
 }
 
 /* ========== Backup ========== */
 function exportBackup(){
-  const blob=new Blob([JSON.stringify({app:'ritual-rehearsal',v:1,saved:new Date().toISOString(),...state},null,1)],{type:'application/json'});
+  const blob=new Blob([JSON.stringify({app:'ritual-rehearsal',v:2,saved:new Date().toISOString(),...state},null,1)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='ritual-backup-'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();
   setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);toast('Backup saved to Downloads');
 }
@@ -414,10 +562,9 @@ $('#importFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(!f)
     const have=new Set(state.scripts.map(s=>s.id));d.scripts.forEach(s=>{s.lines=s.lines.map(l=>({who:l.who,text:maskSecrets(l.text)}));if(!have.has(s.id))state.scripts.push(s);});
     state.stats=Object.assign({},d.stats||{},state.stats);save();toast('Restored '+d.scripts.length+' script(s)');render();}catch(err){toast('That file isn’t a Ritual Rehearsal backup');}};r.readAsText(f);};
 
-try{speechSynthesis.onvoiceschanged=()=>{};}catch(e){}
-// Offline: cache the app itself (never your words — those live in this phone's storage)
-if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){navigator.serviceWorker.register('sw.js').catch(()=>{});}
 render();
+// Offline: cache the app itself (never your words, which live in this phone's storage)
+if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){navigator.serviceWorker.register('sw.js').catch(()=>{});}
 </script>
 </body>
 </html>
