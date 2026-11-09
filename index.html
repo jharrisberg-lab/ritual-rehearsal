@@ -106,6 +106,11 @@ code{background:var(--bg);padding:1px 5px;border-radius:5px;font-size:.9em}
 .gavelbtn svg{width:44px;height:44px}
 .gavelbtn.hit{transform:scale(.94);background:var(--gold-soft)}
 .taps{font:700 1.4rem var(--display);font-variant-numeric:tabular-nums}
+.sheet{position:fixed;inset:0;z-index:30;background:rgba(10,14,25,.55);display:flex;align-items:flex-end;justify-content:center}
+.sheet>div{background:var(--surface);color:var(--ink);width:100%;max-width:640px;border-radius:16px 16px 0 0;display:flex;flex-direction:column;gap:12px;
+  padding:16px max(16px,env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.sheet textarea{min-height:30vh}
+.editable{cursor:pointer}
 </style>
 </head>
 <body>
@@ -535,7 +540,7 @@ function Practice(){
       (shown.length?shown.map(c=>c.who?'<div class="cue"><div class="who">'+esc(c.who)+'</div>'+renderLine(c.text,'full')+'</div>':'<div class="dir">'+renderLine(c.text,'full')+'</div>').join('')+(shown.some(isSpoken)?'<button class="ghost" id="playCue" style="align-self:flex-start">▶ Hear cue</button>':''):'<div class="muted small">Your part opens here.</div>')+
       '<div><div class="who">'+esc(line.who)+' (you)</div><div class="mine" id="mine">'+renderLine(line.text,shownMode,P.result)+'</div></div>'+
       (P.result?'<div class="row"><span class="score">'+P.result.score+'%</span><span class="muted small grow">'+P.result.msg+'</span></div>':'')+
-      (!P.result&&P.mode!=='full'?'<button class="ghost" id="reveal" style="align-self:flex-start">'+(P.reveal?'Hide':'Peek')+'</button>':'')+
+      '<div class="row">'+(!P.result&&P.mode!=='full'?'<button class="ghost" id="reveal">'+(P.reveal?'Hide':'Peek')+'</button>':'')+'<span class="grow"></span><button class="ghost" id="editL">✎ Edit line</button></div>'+
     '</div>'+
     (nKnocks?'<div class="gavelpad"><button class="gavelbtn" id="gavel" aria-label="Knock">'+GAVEL+'</button><div class="row"><span class="taps" id="taps">'+P.taps+'</span><span class="muted small">knock'+(P.taps===1?'':'s')+' given</span><button class="ghost" id="tapReset">Reset</button></div></div>':'')+
     (nWords?'<button class="mic" id="mic" aria-label="Start speaking">🎙</button><div class="heard" id="heard" aria-live="polite">'+(P.result&&P.heard?'Heard: “'+esc(P.heard)+'”':(nKnocks?'Give the knocks, then tap the mic and say your words. Tap again to check.':'Tap the mic, say your line, then tap again to check.'))+'</div>'
@@ -548,6 +553,7 @@ function Practice(){
   $('#cuesOn').onchange=e=>{state.settings.cues=e.target.checked;save();};
   const pc=$('#playCue');if(pc)pc.onclick=()=>sayCue(cueText(shown),true);
   const rv=$('#reveal');if(rv)rv.onclick=()=>{P.reveal=!P.reveal;Practice();};
+  $('#editL').onclick=()=>{stopListening();editLine(s,li,ch=>{if(ch){P.result=null;P.taps=0;}Practice();});};
   const finish=(said)=>{
     let r=nWords?compare(line.text,said||''):{res:words(line.text).map(()=>({k:'ok'})),extra:[],score:100};
     let score=r.score;const knocksOK=P.taps===nKnocks;const msgs=[];
@@ -577,14 +583,31 @@ function Practice(){
   };
 }
 
+/* ========== Edit one line in place ========== */
+function editLine(s,i,done){
+  const l=s.lines[i];const box=document.createElement('div');box.className='sheet';
+  box.innerHTML='<div role="dialog" aria-label="Edit line"><h2>Edit line</h2>'+
+    '<div class="muted small">Same format as the full editor. Add more lines to split it; clear it to delete.</div>'+
+    '<textarea id="lineRaw" spellcheck="false">'+esc(toRaw([l]))+'</textarea>'+
+    '<div class="row"><button class="primary grow" id="lineSave">Save</button><button class="grow" id="lineCancel">Cancel</button></div></div>';
+  document.body.appendChild(box);const ta=box.querySelector('#lineRaw');ta.focus();
+  const close=(changed)=>{box.remove();done&&done(changed);};
+  box.querySelector('#lineCancel').onclick=()=>close(false);
+  box.onclick=e=>{if(e.target===box)close(false);};
+  box.querySelector('#lineSave').onclick=()=>{const nl=parseScript(ta.value);
+    // a continuation with no speaker keeps this line's speaker
+    if(nl.length&&!nl[0].who&&l.who&&l.who!=='#'&&!ta.value.trim().startsWith('['))nl[0].who=l.who;
+    s.lines.splice(i,1,...nl);save();toast(nl.length?'Line saved':'Line deleted');close(true);};
+}
+
 /* ========== Read through ========== */
 let readMode='full',readSkip=true,readOpen=new Set();
 function Read(){
   const s=getScript(view.id);if(!s)return go({name:'home'});
   const blocks=[];let run=[];
-  const lineHtml=(l)=>{const me=isMine(s,l);const st=me?statFor(s,l):null;
-    if(!l.who)return '<div class="dir">'+renderLine(l.text,'full')+'</div>';
-    return '<div class="readline'+(me?' me':'')+'"><div class="row"><span class="who grow">'+esc(l.who)+'</span>'+(me?pill(st?st.last:null):'')+'</div><div>'+renderLine(l.text,me?readMode:(readMode==='letters'?'letters':'full'))+'</div></div>';};
+  const lineHtml=(l)=>{const me=isMine(s,l);const st=me?statFor(s,l):null;const li=s.lines.indexOf(l);
+    if(!l.who)return '<div class="dir editable" data-li="'+li+'">'+renderLine(l.text,'full')+'</div>';
+    return '<div class="readline editable'+(me?' me':'')+'" data-li="'+li+'"><div class="row"><span class="who grow">'+esc(l.who)+'</span>'+(me?pill(st?st.last:null):'')+'</div><div>'+renderLine(l.text,me?readMode:(readMode==='letters'?'letters':'full'))+'</div></div>';};
   const flush=(i)=>{if(!run.length)return;
     if(readSkip&&run.length>=4&&!readOpen.has(run[0].i)){const keep=run.slice(-1);const hid=run.slice(0,-1);
       const who=[...new Set(hid.map(r=>r.l.who).filter(Boolean))].slice(0,4).join(', ');
@@ -594,11 +617,12 @@ function Read(){
   s.lines.forEach((l,i)=>{if(i<lo||i>=hi)return;if(l.who==='#'){flush(i);blocks.push('<h2 style="padding:14px 0 4px">'+esc(l.text)+'</h2>');return;}if(isMine(s,l)){flush(i);blocks.push(lineHtml(l));}else run.push({l,i});});flush();
   app.innerHTML=header(secTitle(s),true)+
     '<div class="seg" role="group">'+[['full','Full'],['letters','First letters'],['hidden','Hide mine']].map(m=>'<button data-mode="'+m[0]+'" aria-pressed="'+(readMode===m[0])+'">'+m[1]+'</button>').join('')+'</div>'+
-    '<label class="toggle"><input type="checkbox" id="skip" '+(readSkip?'checked':'')+'> Fold away long stretches I’m not in</label>'+
+    '<label class="toggle"><input type="checkbox" id="skip" '+(readSkip?'checked':'')+'> Fold away long stretches I’m not in</label><div class="muted small">Tap any line to edit it.</div>'+
     '<div class="card" style="gap:0">'+blocks.join('')+'</div>';
   bindBack({name:'ceremony',id:s.id});
   app.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{readMode=b.dataset.mode;Read();});
   app.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>{readOpen.add(+b.dataset.open);Read();});
+  app.querySelectorAll('[data-li]').forEach(d=>d.onclick=()=>editLine(s,+d.dataset.li,ch=>{if(ch)Read();}));
   $('#skip').onchange=e=>{readSkip=e.target.checked;readOpen.clear();Read();};
 }
 
@@ -637,7 +661,7 @@ function drawRehearse(status){
     '</div>')+
     '<div class="row">'+(done?'<button class="primary grow" id="again">Go again</button>':
       (R.running?'<button class="grow" id="pause">'+(R.paused?'Resume':'Pause')+'</button><button class="grow" id="skip">Skip ›</button>':'<button class="primary grow" id="start">'+(R.i>R.lo?'Resume':'Start')+'</button>'))+'</div>'+
-    (!done?'<div class="row"><button class="ghost" id="back1">‹ Back a line</button><span class="grow"></span><button class="ghost" id="hint">Prompt me</button></div>':'')+
+    (!done?'<div class="row"><button class="ghost" id="back1">‹ Back a line</button><button class="ghost" id="editR">✎ Edit line</button><span class="grow"></span><button class="ghost" id="hint">Prompt me</button></div>':'')+
     '<div class="card small"><label class="toggle"><input type="checkbox" id="readActs" '+(state.settings.readActs?'checked':'')+'> Read the red actions aloud</label><label class="toggle"><input type="checkbox" id="retry" '+(state.settings.retry!==false?'checked':'')+'> Have another go when I get it wrong</label></div>';
   bindBack({name:'ceremony',id:R.id});
   const b=document.getElementById('back');if(b){const o=b.onclick;b.onclick=()=>{stopRehearse();o();};}
@@ -649,6 +673,8 @@ function drawRehearse(status){
   const sk=$('#skip');if(sk)sk.onclick=()=>{R.token++;stopListening();try{speechSynthesis.cancel()}catch(e){}R.i++;R.res=null;R.reveal=false;R.taps=0;run();};
   const bk=$('#back1');if(bk)bk.onclick=()=>{R.token++;stopListening();try{speechSynthesis.cancel()}catch(e){}R.i=Math.max(R.lo,R.i-1);while(R.i>R.lo&&!isSpoken(s.lines[R.i]))R.i--;R.res=null;R.reveal=false;R.taps=0;if(R.running&&!R.paused)run();else drawRehearse();};
   const hn=$('#hint');if(hn)hn.onclick=()=>{R.wantHint=true;};
+  const er=$('#editR');if(er)er.onclick=()=>{const s2=getScript(R.id);if(!s2.lines[R.i])return;const wasRunning=R.running&&!R.paused;R.token++;R.paused=true;stopListening();try{speechSynthesis.cancel()}catch(e){}
+    editLine(s2,R.i,ch=>{const [lo,hi]=rangeOf(s2,view.sec);R.lo=lo;R.hi=hi;R.res=null;R.reveal=false;R.taps=0;drawRehearse(wasRunning?'Paused. Tap Resume to carry on from this line.':'');});};
   const ag=$('#again');if(ag)ag.onclick=()=>{R=null;Rehearse();};
   $('#readActs').onchange=e=>{state.settings.readActs=e.target.checked;save();};
   $('#retry').onchange=e=>{state.settings.retry=e.target.checked;save();};
