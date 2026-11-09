@@ -238,7 +238,7 @@ const isMine=(s,l)=>!!l.who&&(s.parts||[]).includes(l.who)&&isSpoken(l);
 /* ========== Screens ========== */
 let view={name:'home'};
 function go(v){stopListening();try{speechSynthesis.cancel()}catch(e){}view=v;render();window.scrollTo(0,0);}
-function render(){({home:Home,ceremony:Ceremony,edit:Edit,practice:Practice,read:Read,settings:Settings})[view.name]();}
+function render(){({home:Home,ceremony:Ceremony,edit:Edit,practice:Practice,rehearse:Rehearse,read:Read,settings:Settings})[view.name]();}
 function header(title,back){return '<header class="top">'+(back?'<button class="ghost" id="back" aria-label="Back">‹ Back</button>':'')+'<h1>'+esc(title)+'</h1></header><div class="pave" aria-hidden="true"></div>';}
 function bindBack(to){const b=$('#back');if(b)b.onclick=()=>go(to||{name:'home'});}
 
@@ -266,7 +266,7 @@ function Ceremony(){
   const L=s.lines.length;
   const row=(name,sec,lo,hi,whole)=>{const n=countMine(s,lo,hi);
     return '<div class="item"><div class="grow"><b>'+esc(name)+'</b><span class="muted small">'+(n?n+' of my line'+(n===1?'':'s'):'not in this part')+'</span></div>'+(n?pill(avgScore(s,lo,hi)):'')+'</div>'+
-      '<div class="row" style="margin-top:-6px;justify-content:flex-end"><button class="ghost" data-go="read" data-sec="'+sec+'">Read</button><button class="'+(whole?'primary':'')+'" data-go="practice" data-sec="'+sec+'" '+(n?'':'disabled')+'>Practise</button></div>';};
+      '<div class="row" style="margin-top:-6px;justify-content:flex-end"><button class="ghost" data-go="read" data-sec="'+sec+'">Read</button><button data-go="practice" data-sec="'+sec+'" '+(n?'':'disabled')+'>Practise</button><button class="'+(whole?'primary':'')+'" data-go="rehearse" data-sec="'+sec+'" '+(n?'':'disabled')+'>Rehearse</button></div>';};
   const secs=sections(s);
   app.innerHTML=header(s.name,true)+
     '<div class="list">'+row('Whole ceremony','',0,L,true)+'</div>'+
@@ -602,6 +602,132 @@ function Read(){
   $('#skip').onchange=e=>{readSkip=e.target.checked;readOpen.clear();Read();};
 }
 
+/* ========== Rehearse (hands-free: it reads the others, listens to you) ========== */
+let R=null,wakeLock=null;
+function beep(f,d){try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();const t=actx.currentTime;const o=actx.createOscillator(),g=actx.createGain();o.frequency.value=f||880;g.gain.setValueAtTime(0.25,t);g.gain.exponentialRampToValueAtTime(0.001,t+(d||0.15));o.connect(g).connect(actx.destination);o.start(t);o.stop(t+(d||0.15));}catch(e){}}
+function say(text,rate){return new Promise(res=>{try{if(!text||!window.speechSynthesis)return res();const u=new SpeechSynthesisUtterance(text);u.lang=state.settings.lang;u.rate=rate||state.settings.rate;
+  let done=false;const fin=()=>{if(!done){done=true;res();}};u.onend=fin;u.onerror=fin;speechSynthesis.cancel();speechSynthesis.speak(u);
+  setTimeout(fin,Math.max(4000,text.length*120));}catch(e){res();}});}
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+function spokenText(l){return words(l.text).map(w=>w.secret?w.letter:w.name?'':w.raw).join(' ').replace(/\s+/g,' ').trim();}
+function actText(l){return tokens(l.text).filter(t=>t.kind==='act').map(t=>t.raw).join('. ');}
+async function knocks(n){for(let i=0;i<n;i++){knockSound();await wait(450);}}
+
+function Rehearse(){
+  const s=getScript(view.id);if(!s)return go({name:'home'});
+  if(!R||R.id!==s.id||R.sec!==view.sec){const [lo,hi]=rangeOf(s,view.sec);R={id:s.id,sec:view.sec,lo,hi,i:lo,running:false,paused:false,results:[],token:0};}
+  drawRehearse();
+}
+function drawRehearse(status){
+  const s=getScript(R.id);const l=s.lines[R.i];const mine=l&&isMine(s,l);
+  const done=R.i>=R.hi;
+  const avg=R.results.length?Math.round(R.results.reduce((a,b)=>a+b.score,0)/R.results.length):null;
+  const nK=l?knockTotal(l.text):0,nW=l?words(l.text).filter(w=>!w.opt).length:0;
+  app.innerHTML=header(secTitle(s),true)+
+    '<div class="seg" role="group" aria-label="How much to show">'+[['full','Full'],['letters','First letters'],['hidden','Hidden']].map(m=>'<button data-mode="'+m[0]+'" aria-pressed="'+((P&&P.mode||'letters')===m[0])+'">'+m[1]+'</button>').join('')+'</div>'+
+    '<div class="row small muted"><span class="grow">'+(done?'Finished':'Line '+(R.i-R.lo+1)+' of '+(R.hi-R.lo))+'</span>'+(avg!=null?'Your lines so far '+pill(avg):'')+'</div>'+
+    '<div class="progress"><i style="width:'+Math.round(100*Math.min(1,(R.i-R.lo)/Math.max(1,R.hi-R.lo)))+'%"></i></div>'+
+    (done?summaryHtml(s):
+    '<div class="card">'+
+      (l.who==='#'?'<h2>'+esc(l.text)+'</h2>':
+       !l.who?'<div class="dir">'+renderLine(l.text,'full')+'</div>':
+       '<div><div class="who">'+esc(l.who)+(mine?' (you)':'')+'</div><div class="'+(mine?'mine':'')+'" id="rline">'+(mine?renderLine(l.text,R.reveal?'full':(P&&P.mode||'letters'),R.res):renderLine(l.text,'full'))+'</div></div>')+
+      '<div class="heard" id="rstatus" aria-live="polite">'+esc(status||(R.running?'':'Tap Start. I’ll read the other parts and listen when it’s your turn.'))+'</div>'+
+      (mine&&nK&&R.running?'<div class="gavelpad"><button class="gavelbtn" id="rgavel" aria-label="Knock">'+GAVEL+'</button><div class="row"><span class="taps" id="rtaps">'+(R.taps||0)+'</span><span class="muted small">of '+(R.reveal?nK:'?')+' knocks</span></div></div>':'')+
+    '</div>')+
+    '<div class="row">'+(done?'<button class="primary grow" id="again">Go again</button>':
+      (R.running?'<button class="grow" id="pause">'+(R.paused?'Resume':'Pause')+'</button><button class="grow" id="skip">Skip ›</button>':'<button class="primary grow" id="start">'+(R.i>R.lo?'Resume':'Start')+'</button>'))+'</div>'+
+    (!done?'<div class="row"><button class="ghost" id="back1">‹ Back a line</button><span class="grow"></span><button class="ghost" id="hint">Prompt me</button></div>':'')+
+    '<div class="card small"><label class="toggle"><input type="checkbox" id="readActs" '+(state.settings.readActs?'checked':'')+'> Read the red actions aloud</label><label class="toggle"><input type="checkbox" id="retry" '+(state.settings.retry!==false?'checked':'')+'> Have another go when I get it wrong</label></div>';
+  bindBack({name:'ceremony',id:R.id});
+  const b=document.getElementById('back');if(b){const o=b.onclick;b.onclick=()=>{stopRehearse();o();};}
+  app.querySelectorAll('[data-mode]').forEach(x=>x.onclick=()=>{P=P||{};P.mode=x.dataset.mode;drawRehearse(document.getElementById('rstatus')&&document.getElementById('rstatus').textContent);});
+  const st=$('#start');if(st)st.onclick=()=>{try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();actx.resume&&actx.resume();}catch(e){}
+    try{navigator.wakeLock&&navigator.wakeLock.request('screen').then(w=>wakeLock=w).catch(()=>{});}catch(e){}
+    R.running=true;R.paused=false;run();};
+  const pa=$('#pause');if(pa)pa.onclick=()=>{if(R.paused){R.paused=false;run();}else{R.paused=true;R.token++;stopListening();try{speechSynthesis.cancel()}catch(e){}drawRehearse('Paused');}};
+  const sk=$('#skip');if(sk)sk.onclick=()=>{R.token++;stopListening();try{speechSynthesis.cancel()}catch(e){}R.i++;R.res=null;R.reveal=false;R.taps=0;run();};
+  const bk=$('#back1');if(bk)bk.onclick=()=>{R.token++;stopListening();try{speechSynthesis.cancel()}catch(e){}R.i=Math.max(R.lo,R.i-1);while(R.i>R.lo&&!isSpoken(s.lines[R.i]))R.i--;R.res=null;R.reveal=false;R.taps=0;if(R.running&&!R.paused)run();else drawRehearse();};
+  const hn=$('#hint');if(hn)hn.onclick=()=>{R.wantHint=true;};
+  const ag=$('#again');if(ag)ag.onclick=()=>{R=null;Rehearse();};
+  $('#readActs').onchange=e=>{state.settings.readActs=e.target.checked;save();};
+  $('#retry').onchange=e=>{state.settings.retry=e.target.checked;save();};
+  const gv=$('#rgavel');if(gv)gv.onpointerdown=e=>{e.preventDefault();R.taps=(R.taps||0)+1;R.lastTap=Date.now();knockSound();$('#rtaps').textContent=R.taps;gv.classList.add('hit');setTimeout(()=>gv.classList.remove('hit'),90);};
+}
+function summaryHtml(s){
+  const bad=R.results.filter(r=>r.score<90).sort((a,b)=>a.score-b.score).slice(0,5);
+  return '<div class="card"><h2>Done</h2><p style="margin:0">'+R.results.length+' of your lines · average '+(R.results.length?pill(Math.round(R.results.reduce((a,b)=>a+b.score,0)/R.results.length)):'–')+'</p>'+
+    (bad.length?'<div class="small muted">Worth another look:</div>'+bad.map(r=>'<div class="row small"><span class="grow">'+esc(spokenText(s.lines[r.i]).split(' ').slice(0,8).join(' '))+'…</span>'+pill(r.score)+'</div>').join(''):'<p class="muted small" style="margin:0">All your lines were 90% or better.</p>')+'</div>';
+}
+function stopRehearse(){if(R){R.token++;R.running=false;}stopListening();try{speechSynthesis.cancel()}catch(e){}try{wakeLock&&wakeLock.release();}catch(e){}}
+
+async function run(){
+  const my=++R.token;const alive=()=>R&&R.token===my&&R.running&&!R.paused&&view.name==='rehearse';
+  const s=getScript(R.id);
+  while(alive()&&R.i<R.hi){
+    const l=s.lines[R.i];
+    if(l.who==='#'){drawRehearse();await say(l.text);if(!alive())return;R.i++;continue;}
+    if(!isMine(s,l)){
+      drawRehearse();
+      const acts=state.settings.readActs?actText(l):'';const words_=spokenText(l);const k=knockTotal(l.text);
+      if(acts)await say((l.who&&l.who!=='ALL'?l.who.split('').join(' ')+' ':'')+acts,state.settings.rate*1.1);
+      if(!alive())return;
+      if(k)await knocks(k);
+      if(!alive())return;
+      if(words_&&l.who)await say(words_);
+      if(!alive())return;
+      R.i++;continue;
+    }
+    // my line
+    R.res=null;R.reveal=false;R.taps=0;let tries=0,score=0;
+    while(alive()){
+      const nK=knockTotal(l.text),nW=words(l.text).filter(w=>!w.opt).length;
+      let kOK=true,wScore=null,said='';
+      if(nK){drawRehearse('Your knocks');beep(660,0.12);
+        await new Promise(res=>{const t0=Date.now();const iv=setInterval(()=>{if(!alive()){clearInterval(iv);return res();}
+          if(R.taps&&Date.now()-R.lastTap>1500){clearInterval(iv);res();}else if(!R.taps&&Date.now()-t0>12000){clearInterval(iv);res();}},150);});
+        if(!alive())return;kOK=R.taps===nK;}
+      if(nW){drawRehearse('Your line… speak now');beep(880,0.15);
+        said=await listenFor(l,alive);if(!alive())return;
+        const r=compare(l.text,said);wScore=r.score;R.res=r;}
+      score=nW?(nK?Math.round(wScore*0.8+(kOK?20:0)):wScore):(kOK?100:0);
+      R.reveal=true;
+      const msg=(nK&&!kOK?'Knocks: '+R.taps+', should be '+nK+'. ':'')+(nW?(score>=90?'Good.':score>=70?'Close.':'Not quite.'):(kOK?'Good.':''));
+      drawRehearse((said?'Heard: “'+said+'” · ':'')+score+'% · '+msg);
+      setStat(s,l,score);
+      if(score>=90||tries>=1||state.settings.retry===false){await say(score>=90?'Good':score>=70?'Close':'');break;}
+      tries++;
+      await say('Not quite. It goes: '+spokenText(l)+'. Try again.');if(!alive())return;
+      R.res=null;R.reveal=false;R.taps=0;
+    }
+    if(!alive())return;
+    R.results.push({i:R.i,score});
+    await wait(500);R.i++;
+  }
+  if(R&&R.token===my&&R.i>=R.hi){R.running=false;drawRehearse();const a=R.results.length?Math.round(R.results.reduce((x,y)=>x+y.score,0)/R.results.length):0;say('Finished. Your average was '+a+' percent.');try{wakeLock&&wakeLock.release();}catch(e){}}
+}
+// Listen until the line is complete, or you pause. Prompts with the opening words if you stall.
+function listenFor(l,alive){
+  return new Promise(async res=>{
+    let last='',lastAt=Date.now(),started=Date.now(),hinted=false,finished=false;
+    const W=words(l.text).filter(w=>!w.opt);
+    const finish=()=>{if(finished)return;finished=true;clearInterval(iv);stopListening();setTimeout(()=>res((heardFinal||last||'').trim()),300);};
+    const ok=await startListening(t=>{if(t===null){finish();return;}if(t!==last){last=t;lastAt=Date.now();const st=document.getElementById('rstatus');if(st)st.textContent=t;
+      const r=compare(l.text,t);const lastWord=r.res.length?r.res[r.res.length-1]:null;if(r.score>=95&&lastWord&&(lastWord.k==='ok'||lastWord.k==='close'))finish();}});
+    if(!ok){finish();return;}
+    const iv=setInterval(async()=>{
+      if(!alive()){finish();return;}
+      const idle=Date.now()-lastAt;
+      if(R.wantHint||(!last&&Date.now()-started>7000&&!hinted)){R.wantHint=false;hinted=true;stopListening();
+        const firstWords=W.slice(0,4).map(w=>w.raw).join(' ');
+        await say(firstWords);if(!alive()){finish();return;}
+        heardCarry=last;listening=true;begin();started=Date.now();lastAt=Date.now();return;}
+      if(last&&idle>2600)finish();
+      else if(!last&&Date.now()-started>15000)finish();
+    },200);
+  });
+}
+
 /* ========== Settings ========== */
 function Settings(){
   const st=state.settings;
@@ -611,7 +737,7 @@ function Settings(){
     '<label class="toggle"><input type="checkbox" id="sound" '+(st.sound?'checked':'')+'> Knock sound when tapping the gavel</label></div>'+
     '<div class="card"><label for="lang">Accent</label><select id="lang">'+[['en-GB','English (UK)'],['en-US','English (US)'],['en-IE','English (Ireland)'],['en-AU','English (Australia)']].map(o=>'<option value="'+o[0]+'"'+(st.lang===o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select>'+
     '<label for="rate">Cue reading speed</label><input type="range" id="rate" min="0.6" max="1.4" step="0.1" value="'+st.rate+'"></div>'+
-    '<div class="card"><h2>Tips</h2><ul class="small" style="margin:0;padding-left:1.2em"><li>Secret words show as a gold letter and names as “…”. Say them, mouth them or skip them. They never count against you.</li><li>Red words are actions. They’re shown for context and never checked.</li><li>Lines with knocks show a gavel pad. Tap it the right number of times.</li><li>Add to your home screen: Chrome menu ⋮ → Add to Home screen.</li></ul></div>';
+    '<div class="card"><h2>Tips</h2><ul class="small" style="margin:0;padding-left:1.2em"><li>Secret words show as a gold letter and names as “…”. Say them, mouth them or skip them. They never count against you.</li><li>Red words are actions. They’re shown for context and never checked.</li><li>Lines with knocks show a gavel pad. Tap it the right number of times.</li><li>Rehearse is hands-free: it reads the other parts aloud, beeps when it’s your turn, listens, and moves on. Stall for a few seconds and it prompts you with your opening words.</li><li>Add to your home screen: Chrome menu ⋮ → Add to Home screen.</li></ul></div>';
   bindBack();
   $('#local').onchange=e=>{st.local=e.target.checked;save();};
   $('#sound').onchange=e=>{st.sound=e.target.checked;save();};
